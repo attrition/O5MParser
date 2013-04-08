@@ -6,7 +6,7 @@ using System.Collections.Generic;
 
 namespace O5M
 {
-    struct Boundary
+    public struct Boundary
     {
         public Int64 minLat;
         public Int64 minLon;
@@ -14,18 +14,20 @@ namespace O5M
         public Int64 maxLon;
     }
 
-    struct FileInfo
+    // only  contains bounds for now, but there are other fields that could
+    // be stored here when implemented
+    public struct FileInfo
     {
         public Boundary bounds;
     }
 
-    struct Author
+    public struct Author
     {
         public string id;
         public string name;
     }
 
-    struct Header
+    public struct Header
     {
         public Int64 version;
         public Int64 timestamp;
@@ -33,7 +35,7 @@ namespace O5M
         public Author author;
     }
 
-    struct Node
+    public struct Node
     {
         public Int64 id;
         public Header header;
@@ -44,7 +46,7 @@ namespace O5M
         public Dictionary<string, string> tags;
     }
 
-    struct Way
+    public struct Way
     {
         public Int64 id;
         public Header header;
@@ -53,47 +55,76 @@ namespace O5M
         public Dictionary<string, string> tags;
     }
 
-    // this could be reorganized into a static class that returns a sort of
-    // 'ParsedData' instead, i.e. 'public ParsedData Parse(string file)',
-    // where ParsedData contains the O5MParser member list data and fileInfo
-    public class O5MParser
+    public class ParsedData
     {
-        string file;
-        FileInfo fileInfo;
+        public bool Complete { get; internal set; }
+        public FileInfo Details { get; internal set; }
+        public List<Node> Nodes { get; internal set; }
+        public List<Way> Ways { get; internal set; }
 
-        List<Node> nodes;
-        List<Way> ways;
+        // I can't recall if StringTable being public is necessary,
+        // I've left it this way just in case.
+        public List<string> StringTable { get; internal set; }
 
-        List<string> stringTable;
-        Dictionary<string, Int64> deltas;
+        private Dictionary<string, Int64> deltas;
 
-        public O5MParser(string file)
+        public ParsedData()
         {
-            this.file = file;
+            Complete = false;
+            Details = new FileInfo();
+            Nodes = new List<Node>();
+            Ways = new List<Way>();
+            StringTable = new List<string>();
 
-            stringTable = new List<string>();
             deltas = new Dictionary<string, long>();
-
-            nodes = new List<Node>();
-            ways = new List<Way>();
         }
 
-        public bool Parse()
+        internal void ClearTables()
         {
+            StringTable.Clear();
+            deltas.Clear();
+        }
+
+        internal Int64 ApplyDelta(Int64 val, string key)
+        {
+            if (val == 0)
+                return val;
+
+            if (deltas.ContainsKey(key))
+            {
+                var newVal = val + deltas[key];
+                deltas[key] = newVal;
+                return newVal;
+            }
+            else
+                deltas[key] = val;
+
+            return val;
+        }
+    }
+
+    // main class, call O5M.O5MPaser.Parse to get the ParsedData from a .o5m file
+    public static class O5MParser
+    {
+        public static ParsedData Parse(string file)
+        {
+            var parsed = new ParsedData();
+
             bool success = false;
 
             using (var fs = new FileStream(file, FileMode.Open))
             using (var br = new BinaryReader(fs))
             {
                 // check header and parse if possible
-                if (ValidateHeader(br) && ParseFile(br))
+                if (ValidateHeader(br) && ParseFile(br, parsed))
                     success = true;
             }
 
-            return success;
+            parsed.Complete = success;
+            return parsed;
         }
 
-        private bool ValidateHeader(BinaryReader br)
+        private static bool ValidateHeader(BinaryReader br)
         {
             // expected header: ff e0 046f 356d 32
             //     reset flag --^^ ^^^^^^^^^^^^^^^-- header
@@ -102,7 +133,7 @@ namespace O5M
             return false;
         }
 
-        private bool ParseFile(BinaryReader br)
+        private static bool ParseFile(BinaryReader br, ParsedData parsed)
         {
             bool reading = true;
 
@@ -113,22 +144,21 @@ namespace O5M
                 switch (b)
                 {
                     case 0xFF: // reset
-                        stringTable.Clear();
-                        deltas.Clear();
+                        parsed.ClearTables();
                         break;
 
                     case 0xDB:
-                        if (!ParseBoundary(br))
+                        if (!ParseBoundary(br, parsed))
                             return false;
                         break;
 
                     case 0x10:
-                        if (!ParseNode(br))
+                        if (!ParseNode(br, parsed))
                             return false;
                         break;
 
                     case 0x11:
-                        if (!ParseWay(br))
+                        if (!ParseWay(br, parsed))
                             return false;
                         break;
                 }
@@ -137,41 +167,41 @@ namespace O5M
             return true;
         }
 
-        private bool ParseWay(BinaryReader br)
+        private static bool ParseWay(BinaryReader br, ParsedData parsed)
         {
             int bytes = 0;
             int bytesSoFar = 0;
 
             Int64 len = ParseNumber(br, false);
-            Int64 id = ApplyDelta(ParseNumberAndTrackBytes(br, true, out bytes), "wayid");
+            Int64 id = parsed.ApplyDelta(ParseNumberAndTrackBytes(br, true, out bytes), "wayid");
             bytesSoFar += bytes;
 
             // bytes...
-            var way = ParseWayContents(br, bytesSoFar, (int)len);
+            var way = ParseWayContents(br, parsed, bytesSoFar, (int)len);
             way.id = id;
-            ways.Add(way);
+            parsed.Ways.Add(way);
 
             return true;
         }
 
-        private Way ParseWayContents(BinaryReader br, int bytesSoFar, int bytesTotal)
+        private static Way ParseWayContents(BinaryReader br, ParsedData parsed, int bytesSoFar, int bytesTotal)
         {
             int bytes = 0;
 
             var way = new Way();
-            way.header = ParseHeader(br, out bytes);
+            way.header = ParseHeader(br, parsed, out bytes);
             bytesSoFar += bytes;
 
             // reference parsing
-            way.refs = ParseWayRefs(br, out bytes);
+            way.refs = ParseWayRefs(br, parsed, out bytes);
             bytesSoFar += bytes;
 
-            way.tags = ParseTags(br, bytesSoFar, bytesTotal);
+            way.tags = ParseTags(br, parsed, bytesSoFar, bytesTotal);
 
             return way;
         }
 
-        private List<Int64> ParseWayRefs(BinaryReader br, out int bytes)
+        private static List<Int64> ParseWayRefs(BinaryReader br, ParsedData parsed, out int bytes)
         {
             bytes = 0;
             int bytesRead = 0;
@@ -185,7 +215,7 @@ namespace O5M
                 Int64 totalBytes = 0;
                 while (totalBytes < refLen)
                 {
-                    var refNum = ApplyDelta(ParseNumberAndTrackBytes(br, true, out bytesRead), "noderefs");
+                    var refNum = parsed.ApplyDelta(ParseNumberAndTrackBytes(br, true, out bytesRead), "noderefs");
                     totalBytes += bytesRead;
                     bytes += bytesRead;
                     refs.Add(refNum);
@@ -195,40 +225,40 @@ namespace O5M
             return refs;
         }
 
-        private bool ParseNode(BinaryReader br)
+        private static bool ParseNode(BinaryReader br, ParsedData parsed)
         {
             int bytes = 0;
 
             Int64 len = ParseNumber(br, false);
-            Int64 id = ApplyDelta(ParseNumberAndTrackBytes(br, true, out bytes), "nodeid");
+            Int64 id = parsed.ApplyDelta(ParseNumberAndTrackBytes(br, true, out bytes), "nodeid");
 
-            var node = ParseNodeContents(br, bytes, (int)len);
+            var node = ParseNodeContents(br, parsed, bytes, (int)len);
             node.id = id;
-            nodes.Add(node);
+            parsed.Nodes.Add(node);
 
             return true;
         }
 
-        private Node ParseNodeContents(BinaryReader br, int bytesSoFar, int bytesTotal)
+        private static Node ParseNodeContents(BinaryReader br, ParsedData parsed, int bytesSoFar, int bytesTotal)
         {
             int bytes = 0;
 
             var node = new Node();
-            node.header = ParseHeader(br, out bytes);
+            node.header = ParseHeader(br, parsed, out bytes);
             bytesSoFar += bytes;
 
-            node.lon = ApplyDelta(ParseNumberAndTrackBytes(br, true, out bytes), "nodelon");
+            node.lon = parsed.ApplyDelta(ParseNumberAndTrackBytes(br, true, out bytes), "nodelon");
             bytesSoFar += bytes;
 
-            node.lat = ApplyDelta(ParseNumberAndTrackBytes(br, true, out bytes), "nodelat");
+            node.lat = parsed.ApplyDelta(ParseNumberAndTrackBytes(br, true, out bytes), "nodelat");
             bytesSoFar += bytes;
 
-            node.tags = ParseTags(br, bytesSoFar, bytesTotal);
+            node.tags = ParseTags(br, parsed, bytesSoFar, bytesTotal);
 
             return node;
         }
 
-        private Dictionary<string, string> ParseTags(BinaryReader br, int bytesSoFar, int bytesTotal)
+        private static Dictionary<string, string> ParseTags(BinaryReader br, ParsedData parsed, int bytesSoFar, int bytesTotal)
         {
             int bytes = 0;
             var tags = new Dictionary<string, string>();
@@ -237,20 +267,20 @@ namespace O5M
             {
                 if (br.PeekChar() == 0x00)
                 {
-                    var tag = ParseStringPair(br, out bytes);
+                    var tag = ParseStringPair(br, parsed, out bytes);
                     bytesSoFar += bytes;
 
                     var splitTag = tag.Split('\0');
                     tags[splitTag[0]] = splitTag[1];
-                    if (!stringTable.Contains(tag))
-                        stringTable.Add(tag);
+                    if (!parsed.StringTable.Contains(tag))
+                        parsed.StringTable.Add(tag);
                 }
                 else
                 {
                     var entry = ParseNumberAndTrackBytes(br, false, out bytes);
                     bytesSoFar += bytes;
 
-                    var tag = stringTable[stringTable.Count - Convert.ToInt32(entry)];
+                    var tag = parsed.StringTable[parsed.StringTable.Count - Convert.ToInt32(entry)];
                     var splitTag = tag.Split('\0');
                     tags[splitTag[0]] = splitTag[1];
                 }
@@ -259,7 +289,7 @@ namespace O5M
             return tags;
         }
 
-        private Header ParseHeader(BinaryReader br, out int bytes)
+        private static Header ParseHeader(BinaryReader br, ParsedData parsed, out int bytes)
         {
             bytes = 0;
             int bytesRead = 0;
@@ -271,16 +301,16 @@ namespace O5M
 
             if (header.version != 0)
             {
-                header.timestamp = ApplyDelta(ParseNumberAndTrackBytes(br, true, out bytesRead), "nodetimestamp"); // seconds from 1970
+                header.timestamp = parsed.ApplyDelta(ParseNumberAndTrackBytes(br, true, out bytesRead), "nodetimestamp"); // seconds from 1970
                 bytes += bytesRead;
 
                 // specs unclear if you filter author with timestamp or version
                 //if (header.timestamp != 0)
                 //{
-                header.changeset = ApplyDelta(ParseNumberAndTrackBytes(br, true, out bytesRead), "nodechangeset");
+                header.changeset = parsed.ApplyDelta(ParseNumberAndTrackBytes(br, true, out bytesRead), "nodechangeset");
                 bytes += bytesRead;
 
-                var authorInfo = ParseUIDStringAndTrackBytes(br, out bytesRead).Split('\0'); // [0] uid, [1] user name
+                var authorInfo = ParseUIDStringAndTrackBytes(br, parsed, out bytesRead).Split('\0'); // [0] uid, [1] user name
                 bytes += bytesRead;
 
                 header.author.id = authorInfo[0];
@@ -291,19 +321,22 @@ namespace O5M
             return header;
         }
 
-        private bool ParseBoundary(BinaryReader br)
+        private static bool ParseBoundary(BinaryReader br, ParsedData parsed)
         {
             // len, minlon, minlat, maxlon, maxlat
             Int64 len = ParseNumber(br, false);
-            fileInfo.bounds.minLon = ParseNumber(br, true);
-            fileInfo.bounds.minLat = ParseNumber(br, true);
-            fileInfo.bounds.maxLon = ParseNumber(br, true);
-            fileInfo.bounds.maxLat = ParseNumber(br, true);
+
+            var details = new FileInfo();
+            details.bounds.minLon = ParseNumber(br, true);
+            details.bounds.minLat = ParseNumber(br, true);
+            details.bounds.maxLon = ParseNumber(br, true);
+            details.bounds.maxLat = ParseNumber(br, true);
+            parsed.Details = details;
 
             return true;
         }
 
-        private string ParseStringPair(BinaryReader br, out int bytes)
+        private static string ParseStringPair(BinaryReader br, ParsedData parsed, out int bytes)
         {
             var byteStr = new List<byte>();
             bytes = 0;
@@ -311,7 +344,7 @@ namespace O5M
             if (br.PeekChar() != 0x00) // table entry
             {
                 var entry = ParseNumberAndTrackBytes(br, false, out bytes);
-                return stringTable[stringTable.Count - Convert.ToInt32(entry)];
+                return parsed.StringTable[parsed.StringTable.Count - Convert.ToInt32(entry)];
             }
 
             br.ReadByte();
@@ -336,13 +369,13 @@ namespace O5M
             bytes++; // to catch the 0x00
 
             var retString = Encoding.UTF8.GetString(byteStr.ToArray(), 0, byteStr.Count);
-            if (!stringTable.Contains(retString))
-                stringTable.Add(retString);
+            if (!parsed.StringTable.Contains(retString))
+                parsed.StringTable.Add(retString);
 
             return retString;
         }
 
-        private string ParseUIDStringAndTrackBytes(BinaryReader br, out int bytes)
+        private static string ParseUIDStringAndTrackBytes(BinaryReader br, ParsedData parsed, out int bytes)
         {
             var byteStr = new List<byte>();
             bytes = 0;
@@ -351,7 +384,7 @@ namespace O5M
             if (br.PeekChar() != 0x00) // table entry
             {
                 var entry = ParseNumberAndTrackBytes(br, false, out bytes);
-                return stringTable[stringTable.Count - Convert.ToInt32(entry)];
+                return parsed.StringTable[parsed.StringTable.Count - Convert.ToInt32(entry)];
             }
 
             br.ReadByte(); // 0x00
@@ -372,26 +405,26 @@ namespace O5M
             bytes++; // to catch the 0x00
 
             var uidString = uid + '\0' + Encoding.UTF8.GetString(byteStr.ToArray(), 0, byteStr.Count);
-            if (!stringTable.Contains(uidString))
-                stringTable.Add(uidString);
+            if (!parsed.StringTable.Contains(uidString))
+                parsed.StringTable.Add(uidString);
 
             return uidString;
         }
 
-        private string ParseUIDString(BinaryReader br)
+        private static string ParseUIDString(BinaryReader br, ParsedData parsed)
         {
             int bytes = 0;
-            return ParseUIDStringAndTrackBytes(br, out bytes);
+            return ParseUIDStringAndTrackBytes(br, parsed, out bytes);
         }
 
         // convenience function for parsing numbers
-        private Int64 ParseNumber(BinaryReader br, bool signed)
+        private static Int64 ParseNumber(BinaryReader br, bool signed)
         {
             int bytes = 0;
             return ParseNumberAndTrackBytes(br, signed, out bytes);
         }
 
-        private Int64 ParseNumberAndTrackBytes(BinaryReader br, bool signed, out int place)
+        private static Int64 ParseNumberAndTrackBytes(BinaryReader br, bool signed, out int place)
         {
             Int64 res = 0;
             var done = false;
@@ -435,7 +468,7 @@ namespace O5M
             return res;
         }
 
-        private Int64 Int64FromBytes(byte[] bytes, int places, bool signed)
+        private static Int64 Int64FromBytes(byte[] bytes, int places, bool signed)
         {
             Int64 ret = 0;
             var shift = 0;
@@ -448,23 +481,6 @@ namespace O5M
             }
 
             return ret;
-        }
-
-        private Int64 ApplyDelta(Int64 val, string key)
-        {
-            if (val == 0)
-                return val;
-
-            if (deltas.ContainsKey(key))
-            {
-                var newVal = val + deltas[key];
-                deltas[key] = newVal;
-                return newVal;
-            }
-            else
-                deltas[key] = val;
-
-            return val;
         }
     }
 }
