@@ -359,7 +359,6 @@ namespace O5M
             bytes++; // to catch the 0x00
 
             byteStr.Add(0x00);
-            bytes++;
 
             while ((curr = br.ReadByte()) != 0x00)
             {
