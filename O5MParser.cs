@@ -87,9 +87,6 @@ namespace O5M
 
         internal Int64 ApplyDelta(Int64 val, string key)
         {
-            if (val == 0)
-                return val;
-
             if (deltas.ContainsKey(key))
             {
                 var newVal = val + deltas[key];
