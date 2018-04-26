@@ -1,4 +1,4 @@
-O5MParser
+O5MParser (fixed and optimised)
 =========
 
 O5MParser is a C# library to parse a subset of the OpenStreetMap O5M file format. It was made for my own small uses and is thus incomplete.
