@@ -275,9 +275,12 @@ namespace O5M
             int bytes = 0;
             Dictionary<string, string> tags = null;
 
+            if(bytesSoFar < bytesTotal)
+                tags = new Dictionary<string, string>();
+
             while (bytesSoFar < bytesTotal)
             {
-                tags = new Dictionary<string, string>();
+                
                 if (br.PeekChar() == 0x00)
                 {
                     var tag = ParseStringPair(br, parsed, out bytes);
